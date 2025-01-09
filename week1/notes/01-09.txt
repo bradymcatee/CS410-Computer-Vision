@@ -1,0 +1,51 @@
+COLORS
+  -RGB color space is NOT unique -- it varies by device
+  -XYZ is a color space that can represent ANY color
+  -Accurate Color Reproduction:
+    *Need to do color calibration
+    *Fix the lighting conditions of the environment and brightness/contrast of monitor
+    *Determine the monitors gamma
+    *Use standard color cards to match colors on the screen to the cards
+  -Any color space that can be represented with a matrix is a linear color space
+  -HSV color space -- hue, saturation, value -- more intuitive for humans when designing things
+  -RGB is NOT perecptually uniform -- distance between two points does not neccessarily represent their distance in visual color
+  -MacAdam Ellipses shows regions in which all colors in that region indistinguishable
+  -LAB is a color space that is close to perceptually uniform -- its not perfect though
+
+FILTERS
+  -Image Filtering:
+    *Computes function of local neighborhood at each pixel location
+    *Useful for enhancing, extracting information from, and detecting patterns in images
+    *Represented with kernels/matrices
+    *Center the matrix on the input image and compute the new pixel value by multiplying and adding up the old pixel values with the filter matrix
+  -Box Filter
+    *Replaces each pixel with an average of its neighborhood
+    *Achieves smoothing effect -- removes sharp features
+    *Can have blocky results and axis-aligned streaks
+  -Gaussian Filter
+    *Isotropic (rotationally symmetric)
+    *Weight contributions of neighboring pixels by nearness
+    *Achieves a smoothing effect without blocky artifacts -- better result than box filter
+    *Standard deviation is a parameter that determines the extent of smoothing
+    *The greater the standard deviation, the more blurry the result
+    *Gaussian function is separable -- we can apply 1D  horizontal and vertical filters separately to reduce computational complexity from k^2 to k
+    *Filter size is another paramater -- larger filter sizes approximate the gaussian function better but significantly increases compute time
+    *In practice, use filter size of 2k+1 x 2k+1 where k~3\sigma (sigma is standard deviation)
+  -Practical Matters
+    *Near the edges, the filter window falls of the edge of image
+    *Many methods for handling edges: clipping, wrap around, copy edge, reflect across edge
+  -Properties of Smoothing Filters
+    *Values are all positive, sum to 1, removes high-frequency components, "low-pass" filter
+  -Key Properties of Linear Filters
+    *filter(f1+f2) = filter(f1) + filter(f2) -- linearity
+    *filter(shift(f)) = shift(filter(f)) -- shift invariance
+  -Median Filter
+    *Replace pixel by the median value of its neighbors
+    *No filter kernel -- no new pixel values introduced
+    *Removes spikes: good for impulse, salt & pepper noise
+    *Nonlinear filter
+    *Only paramater is window size -- how many neighbors do you want to include in the median calculation?
+    *VERY slow algorithm
+
+
+
