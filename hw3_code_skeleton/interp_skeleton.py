@@ -35,9 +35,27 @@ def find_holes(flow):
     :param flow: an dense optical flow matrix of shape [h,w,2], containing a vector [ux,uy] for each pixel
     :return: a mask annotated 0=hole, 1=no hole
     '''
-    holes=None
-    # to be completesd ...
+    h, w, _ = flow.shape
+    holes = np.ones((h, w), dtype=np.float32)
+    
+    # Check for NaN or Inf values
+    invalid_mask = np.logical_or(np.isnan(flow[:,:,0]), np.isnan(flow[:,:,1]))
+    invalid_mask = np.logical_or(invalid_mask, np.isinf(flow[:,:,0]))
+    invalid_mask = np.logical_or(invalid_mask, np.isinf(flow[:,:,1]))
+    
+    # Check for very large values (>10^9)
+    u_too_large = np.abs(flow[:,:,0]) > 1e9
+    v_too_large = np.abs(flow[:,:,1]) > 1e9
+    flow_too_large = np.logical_or(u_too_large, v_too_large)
+    
+    # Combine all hole conditions
+    combined_holes = np.logical_or(invalid_mask, flow_too_large)
+    
+    # Mark holes as 0, no holes as 1
+    holes[combined_holes] = 0
+    
     return holes
+
 
 
 def holefill(flow, holes):
@@ -47,16 +65,44 @@ def holefill(flow, holes):
     :param holes: a binary mask that annotate the location of a hole, 0=hole, 1=no hole
     :return: flow: updated flow
     '''
-    h,w,_ = flow.shape
-    has_hole=1
-    while has_hole==1:
-        # to be completed ...
-        # ===== loop all pixel in x, then in y
+    h, w, _ = flow.shape
+    has_hole = 1
+    updated_flow = flow.copy()
+    updated_holes = holes.copy()
+    
+    while has_hole == 1:
+        has_hole = 0
+        # Loop through all pixels
         for y in range(0, h):
-            for x in range(0,w):
-                # to be completed ...
-                foo=1
-    return flow
+            for x in range(0, w):
+                # Check if this pixel is a hole
+                if updated_holes[y, x] == 0:
+                    # Look at 8 surrounding pixels
+                    valid_vectors = []
+                    
+                    # Define the 8 neighboring pixels
+                    neighbors = [
+                        (y-1, x-1), (y-1, x), (y-1, x+1),
+                        (y, x-1),             (y, x+1),
+                        (y+1, x-1), (y+1, x), (y+1, x+1)
+                    ]
+                    
+                    # Check each neighbor
+                    for ny, nx in neighbors:
+                        # Make sure the neighbor is within the image bounds
+                        if 0 <= ny < h and 0 <= nx < w:
+                            # If neighbor is not a hole, add its flow vector to valid_vectors
+                            if updated_holes[ny, nx] == 1:
+                                valid_vectors.append(updated_flow[ny, nx])
+                    
+                    # If we have valid neighbors, fill the hole with the average flow
+                    if len(valid_vectors) > 0:
+                        avg_flow = np.mean(valid_vectors, axis=0)
+                        updated_flow[y, x] = avg_flow
+                        updated_holes[y, x] = 1
+                        has_hole = 1  # We made a change, so continue the while loop
+    
+    return updated_flow
 
 def occlusions(flow0, frame0, frame1):
     '''
@@ -88,8 +134,44 @@ def occlusions(flow0, frame0, frame1):
     # ==================================================
     # to be completed...
 
-    return occ0,occ1
+    # For each pixel in frame 0
+    for y in range(height):
+        for x in range(width):
+            # Get the flow vector at this pixel
+            fx, fy = flow0[y, x]
+            
+            # Calculate the corresponding position in frame 1
+            x1 = int(round(x + fx))
+            y1 = int(round(y + fy))
+            
+            # Check if the position is within frame 1
+            if 0 <= x1 < width and 0 <= y1 < height:
+                # Cross-check the flow
+                back_fx, back_fy = flow1[y1, x1]
+                
+                # If the sum of absolute differences is > 0.5, mark pixel as occluded
+                if abs(fx + back_fx) + abs(fy + back_fy) > 0.5:
+                    occ0[y, x] = 1
+            else:
+                # If mapped outside the image, mark as occluded
+                occ0[y, x] = 1
+    
+    # For frame 1 occlusion map, if pixel is not targeted by any flow, mark as occluded
+    target_map = np.zeros([height, width], dtype=np.float32)
+    
+    for y in range(height):
+        for x in range(width):
+            fx, fy = flow0[y, x]
+            x1 = int(round(x + fx))
+            y1 = int(round(y + fy))
+            
+            if 0 <= x1 < width and 0 <= y1 < height:
+                target_map[y1, x1] = 1
+    
+    # Pixels in frame 1 that aren't targeted by any flow are occluded
+    occ1 = 1.0 - target_map
 
+    return occ0, occ1
 
 def interpflow(flow, frame0, frame1, t):
     '''
@@ -104,8 +186,47 @@ def interpflow(flow, frame0, frame1, t):
     :param t: the intermiddite position in the middle of the 2 input frames
     :return: a warped flow
     '''
-    iflow = None
-    # to be completed ...
+    height, width, _ = flow.shape
+    
+    # Initialize the flow at time t with a large value to indicate holes
+    iflow = np.ones((height, width, 2), dtype=np.float32) * 1e10
+    
+    # Initialize an accumulation buffer for photo-consistency-based blending
+    consistency_buffer = np.ones((height, width), dtype=np.float32) * 1e10
+    
+    # For each pixel in frame 0
+    for y in range(height):
+        for x in range(width):
+            # Get the flow vector at this pixel
+            fx, fy = flow[y, x]
+            
+            # Forward-warp this flow vector to position t using splatting
+            # Use splatting radius of ±0.5 pixels
+            for yy in np.arange(-0.5, 0.51, 0.5):
+                for xx in np.arange(-0.5, 0.51, 0.5):
+                    # Calculate the target position in the interpolated frame
+                    xt = int(round(x + t * fx + xx))
+                    yt = int(round(y + t * fy + yy))
+                    
+                    # Check if the target position is within the frame
+                    if 0 <= xt < width and 0 <= yt < height:
+                        # Check photo-consistency between source and target
+                        if x + fx >= 0 and x + fx < width and y + fy >= 0 and y + fy < height:
+                            # Calculate color difference as a measure of consistency
+                            # Calculate the position in frame 1
+                            x1 = int(min(max(0, x + fx), width - 1))
+                            y1 = int(min(max(0, y + fy), height - 1))
+                            
+                            # Calculate the color difference
+                            color_diff = np.mean(np.abs(frame0[y, x].astype(np.float32) - 
+                                                      frame1[y1, x1].astype(np.float32)))
+                            
+                            # If this is more consistent than what we've seen before, update the flow
+                            if color_diff < consistency_buffer[yt, xt]:
+                                consistency_buffer[yt, xt] = color_diff
+                                iflow[yt, xt, 0] = fx
+                                iflow[yt, xt, 1] = fy
+    
     return iflow
 
 def warpimages(iflow, frame0, frame1, occ0, occ1, t):
@@ -124,12 +245,87 @@ def warpimages(iflow, frame0, frame1, occ0, occ1, t):
     :param t: interpolated position t
     :return: interpolated image at position t in the middle of the 2 input frames
     '''
-
+    height, width, _ = frame0.shape
     iframe = np.zeros_like(frame0).astype(np.float32)
-
-    # to be completed ...
-
+    
+    # For each pixel in the interpolated frame
+    for y in range(height):
+        for x in range(width):
+            # Get the flow vector at this position in the interpolated frame
+            fx, fy = iflow[y, x]
+            
+            # Calculate the pixel positions in the source frames
+            x0 = x - t * fx
+            y0 = y - t * fy
+            x1 = x + (1 - t) * fx
+            y1 = y + (1 - t) * fy
+            
+            # Check if both source positions are valid and not occluded
+            valid0 = 0 <= x0 < width - 1 and 0 <= y0 < height - 1
+            valid1 = 0 <= x1 < width - 1 and 0 <= y1 < height - 1
+            
+            # Get occlusion status
+            occluded0 = False
+            occluded1 = False
+            
+            if valid0:
+                x0_int, y0_int = int(x0), int(y0)
+                occluded0 = occ0[y0_int, x0_int] > 0.5
+            else:
+                occluded0 = True
+                
+            if valid1:
+                x1_int, y1_int = int(x1), int(y1)
+                occluded1 = occ1[y1_int, x1_int] > 0.5
+            else:
+                occluded1 = True
+                
+            # Blend based on occlusion status
+            if not occluded0 and not occluded1:
+                # Both pixels are visible, blend based on t
+                color0 = bilinear_interpolate(frame0, x0, y0)
+                color1 = bilinear_interpolate(frame1, x1, y1)
+                iframe[y, x] = (1 - t) * color0 + t * color1
+            elif not occluded0:
+                # Only frame 0 is visible
+                iframe[y, x] = bilinear_interpolate(frame0, x0, y0)
+            elif not occluded1:
+                # Only frame 1 is visible
+                iframe[y, x] = bilinear_interpolate(frame1, x1, y1)
+            else:
+                # Both are occluded, use the average color of the two frames for this pixel
+                iframe[y, x] = (frame0[y, x] + frame1[y, x]) / 2.0
+    
     return iframe
+
+def bilinear_interpolate(image, x, y):
+    """
+    Perform bilinear interpolation of the pixel at (x, y) in the image
+    """
+    height, width, _ = image.shape
+    
+    # Ensure x and y are within image bounds
+    x = max(0, min(width - 1.001, x))
+    y = max(0, min(height - 1.001, y))
+    
+    # Get the four neighboring pixels
+    x0, y0 = int(x), int(y)
+    x1, y1 = x0 + 1, y0 + 1
+    
+    # Get the interpolation weights
+    wx = x - x0
+    wy = y - y0
+    
+    # Get the pixel values
+    p00 = image[y0, x0]
+    p01 = image[y0, x1]
+    p10 = image[y1, x0]
+    p11 = image[y1, x1]
+    
+    # Interpolate
+    result = (1 - wx) * (1 - wy) * p00 + wx * (1 - wy) * p01 + (1 - wx) * wy * p10 + wx * wy * p11
+    
+    return result
 
 def blur(im):
     '''
@@ -138,8 +334,7 @@ def blur(im):
     :return updated im:
     '''
     # to be completed ...
-    return im
-
+    return cv2.GaussianBlur(im, (5, 5), 0)
 
 def internp(frame0, frame1, t=0.5, flow0=None):
     '''
